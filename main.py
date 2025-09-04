@@ -99,12 +99,25 @@ class RADIUSClient:
 class COAConsumer:
     """Консьюмер для обработки COA сообщений из RabbitMQ"""
 
-    def __init__(self, amqp_url: str, queue_name: str = "coa_requests"):
+    def __init__(
+        self,
+        amqp_url: str,
+        exchange_name: str = "coa_exchange",
+        dlq_exchange_name: str = "coa_dlq_exchange",
+        queue_name: str = "coa_requests",
+        dlq_name: str = "dlq_coa_requests",
+    ):
         self.amqp_url = amqp_url
+        self.exchange_name = exchange_name
+        self.dlq_exchange_name = dlq_exchange_name
         self.queue_name = queue_name
+        self.dlq_name = dlq_name
         self.connection = None
         self.channel = None
+        self.exchange = None
+        self.dlq_exchange = None
         self.queue = None
+        self.dlq_queue = None
         # Разрешенные логины для обработки
         self.allowed_logins = {"test8", "police", "test-ag"}
 
@@ -113,6 +126,31 @@ class COAConsumer:
         username = session_data.get("login", "")
         return username in self.allowed_logins
 
+    async def send_to_dlq(self, original_message: Dict[str, Any], error_reason: str):
+        """Отправляет сообщение в мертвую очередь с описанием ошибки"""
+        try:
+            # Добавляем информацию об ошибке к оригинальному сообщению
+            dlq_message = original_message.copy()
+            dlq_message["dlq_info"] = {
+                "error_reason": error_reason,
+                "timestamp": asyncio.get_event_loop().time(),
+                "original_queue": self.queue_name,
+            }
+
+            # Отправляем в мертвую очередь через DLQ exchange
+            await self.dlq_exchange.publish(
+                aio_pika.Message(
+                    json.dumps(dlq_message, ensure_ascii=False).encode("utf-8"),
+                    delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                ),
+                routing_key="dlq.coa",
+            )
+
+            logger.info("Сообщение отправлено в мертвую очередь: %s", error_reason)
+
+        except Exception as e:
+            logger.error("Ошибка отправки в мертвую очередь: %s", e)
+
     async def connect(self):
         """Подключение к RabbitMQ"""
         try:
@@ -120,10 +158,48 @@ class COAConsumer:
             self.channel = await self.connection.channel()
             await self.channel.set_qos(prefetch_count=1)
 
-            # Объявляем очередь
-            self.queue = await self.channel.declare_queue(self.queue_name, durable=True)
+            # Создаем COA exchange (topic для гибкой маршрутизации)
+            self.exchange = await self.channel.declare_exchange(
+                self.exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
+            )
 
-            logger.info("Подключен к RabbitMQ, очередь: %s", self.queue_name)
+            # Создаем DLQ exchange (direct для простой маршрутизации)
+            self.dlq_exchange = await self.channel.declare_exchange(
+                self.dlq_exchange_name, aio_pika.ExchangeType.DIRECT, durable=True
+            )
+
+            # Создаем мертвую очередь и привязываем к DLQ exchange
+            self.dlq_queue = await self.channel.declare_queue(
+                self.dlq_name, durable=True
+            )
+            await self.dlq_queue.bind(
+                self.dlq_exchange,
+                routing_key="dlq.coa",  # Простой routing key для DLQ
+            )
+
+            # Создаем основную очередь с настройками для мертвой очереди
+            self.queue = await self.channel.declare_queue(
+                self.queue_name,
+                durable=True,
+                arguments={
+                    "x-dead-letter-exchange": self.dlq_exchange_name,  # Используем DLQ exchange
+                    "x-dead-letter-routing-key": "dlq.coa",  # Маршрутизируем в DLQ
+                },
+            )
+
+            # Привязываем основную очередь к exchange с routing key
+            await self.queue.bind(
+                self.exchange,
+                routing_key="coa.request.*",  # Принимаем все COA запросы
+            )
+
+            logger.info(
+                "Подключен к RabbitMQ, exchange: %s, DLQ exchange: %s, очередь: %s, DLQ: %s",
+                self.exchange_name,
+                self.dlq_exchange_name,
+                self.queue_name,
+                self.dlq_name,
+            )
 
         except Exception as e:
             logger.error("Ошибка подключения к RabbitMQ: %s", e)
@@ -165,9 +241,11 @@ class COAConsumer:
                 # Проверяем, разрешен ли логин для обработки
                 if not self.is_login_allowed(session_data):
                     username = session_data.get("login", "unknown")
+                    error_reason = f"Логин '{username}' не разрешен для обработки"
                     logger.info(
                         "Сообщение для логина %s отправлено в мертвую очередь", username
                     )
+                    await self.send_to_dlq(data, error_reason)
                     return
 
                 if request_type == "kill":
@@ -175,16 +253,40 @@ class COAConsumer:
                 elif request_type == "update":
                     await self.handle_update_request(session_data, attributes)
                 else:
-                    logger.warning("Неизвестный тип COA запроса: %s", request_type)
+                    error_reason = f"Неизвестный тип COA запроса: {request_type}"
+                    logger.warning(error_reason)
+                    await self.send_to_dlq(data, error_reason)
+                    return
 
                 logger.info(
                     "COA сообщение %s обработано успешно", data.get("request_id")
                 )
 
             except json.JSONDecodeError as e:
-                logger.error("Ошибка декодирования JSON: %s", e)
+                error_reason = f"Ошибка декодирования JSON: {str(e)}"
+                logger.error(error_reason)
+                # Для JSON ошибок пытаемся отправить в DLQ оригинальное сообщение
+                try:
+                    raw_body = message.body.decode("utf-8")
+                    dlq_data = {"raw_message": raw_body, "error": "json_decode_error"}
+                    await self.send_to_dlq(dlq_data, error_reason)
+                except Exception as dlq_error:
+                    logger.error(
+                        "Не удалось отправить в DLQ после JSON ошибки: %s", dlq_error
+                    )
             except Exception as e:
-                logger.error("Ошибка обработки сообщения: %s", e, exc_info=True)
+                error_reason = f"Ошибка обработки сообщения: {str(e)}"
+                logger.error(error_reason, exc_info=True)
+                # Для других ошибок пытаемся отправить в DLQ
+                try:
+                    raw_body = message.body.decode("utf-8")
+                    dlq_data = {"raw_message": raw_body, "error": "processing_error"}
+                    await self.send_to_dlq(dlq_data, error_reason)
+                except Exception as dlq_error:
+                    logger.error(
+                        "Не удалось отправить в DLQ после ошибки обработки: %s",
+                        dlq_error,
+                    )
 
     async def handle_kill_request(self, session_data: Dict[str, Any]):
         """Обработка запроса на завершение сессии"""
@@ -296,13 +398,18 @@ async def main():
 
     # Получаем настройки
     amqp_url = config.AMQP_URL
+    exchange_name = config.AMQP_COA_EXCHANGE
+    dlq_exchange_name = config.AMQP_DLQ_EXCHANGE
     queue_name = config.AMQP_COA_QUEUE
+    dlq_name = config.AMQP_DLQ_QUEUE
 
     if not amqp_url:
         logger.error("AMQP_URL не задан в переменных окружения")
         sys.exit(1)
 
-    consumer = COAConsumer(amqp_url, queue_name)
+    consumer = COAConsumer(
+        amqp_url, exchange_name, dlq_exchange_name, queue_name, dlq_name
+    )
 
     try:
         # Подключаемся к RabbitMQ

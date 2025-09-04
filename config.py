@@ -3,7 +3,6 @@
 """
 
 import os
-from typing import Optional
 from dotenv import load_dotenv
 
 # Загружаем переменные окружения
@@ -15,7 +14,10 @@ class Config:
 
     # RabbitMQ настройки
     AMQP_URL: str = os.getenv("AMQP_URL", "amqp://guest:guest@localhost:5672/")
+    AMQP_COA_EXCHANGE: str = os.getenv("AMQP_COA_EXCHANGE", "coa_exchange")
+    AMQP_DLQ_EXCHANGE: str = os.getenv("AMQP_DLQ_EXCHANGE", "coa_dlq_exchange")
     AMQP_COA_QUEUE: str = os.getenv("AMQP_COA_QUEUE", "coa_requests")
+    AMQP_DLQ_QUEUE: str = os.getenv("AMQP_DLQ_QUEUE", "dlq_coa_requests")
 
     # RADIUS настройки
     RADIUS_SECRET: str = os.getenv("RADIUS_SECRET", "123456")
@@ -50,7 +52,13 @@ class Config:
     @classmethod
     def get_amqp_config(cls) -> dict:
         """Получение конфигурации RabbitMQ"""
-        return {"url": cls.AMQP_URL, "queue": cls.AMQP_COA_QUEUE}
+        return {
+            "url": cls.AMQP_URL,
+            "exchange": cls.AMQP_COA_EXCHANGE,
+            "dlq_exchange": cls.AMQP_DLQ_EXCHANGE,
+            "queue": cls.AMQP_COA_QUEUE,
+            "dlq_queue": cls.AMQP_DLQ_QUEUE,
+        }
 
 
 # Создаем экземпляр конфигурации
