@@ -20,7 +20,7 @@ class Config:
     AMQP_DLQ_QUEUE: str = os.getenv("AMQP_DLQ_QUEUE", "dlq_coa_requests")
 
     # RADIUS настройки
-    RADIUS_SECRET: str = os.getenv("RADIUS_SECRET", "123456")
+    RADIUS_SECRET = b"123456"
     RADIUS_TIMEOUT: int = int(os.getenv("RADIUS_TIMEOUT", "30"))
 
     # Логирование

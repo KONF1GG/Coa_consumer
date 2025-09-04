@@ -30,7 +30,7 @@ class RADIUSClient:
 
     def __init__(self, server: str, secret: str, timeout: int = 30):
         self.server = server
-        self.secret = secret.encode() if isinstance(secret, str) else secret
+        self.secret = secret
         self.timeout = timeout
         self.client = None
         self._init_client()
