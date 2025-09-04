@@ -1,0 +1,12 @@
+ 
+services:
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "9004:9000"
+    container_name: coa_consumer
+    restart: always
+    env_file:
+      - path: ./.env
