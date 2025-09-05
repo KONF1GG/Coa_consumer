@@ -49,8 +49,12 @@ class RADIUSClient:
             logger.error("Ошибка инициализации RADIUS клиента: %s", e)
             raise
 
-    def send_coa_request(self, attributes: Dict[str, str]) -> bool:
-        """Отправка CoA-Request пакета"""
+    def send_coa_request(self, attributes: Dict[str, str]) -> tuple[bool, str]:
+        """Отправка CoA-Request пакета
+
+        Returns:
+            tuple[bool, str]: (success, reason) - успех операции и причина (при неуспехе)
+        """
         try:
             # Преобразуем атрибуты в формат pyrad (заменяем дефисы на подчеркивания)
             pyrad_attributes = {k.replace("-", "_"): v for k, v in attributes.items()}
@@ -64,14 +68,25 @@ class RADIUSClient:
             result = self.client.SendPacket(request)
 
             logger.info("CoA-Request отправлен, результат: %s", result.code)
-            return True
+
+            # Проверяем код ответа
+            if result.code == packet.CoAACK:
+                return True, "CoA-Request успешно выполнен"
+            elif result.code == packet.CoANAK:
+                return False, f"CoA-Request отклонен (CoA-NAK), код: {result.code}"
+            else:
+                return False, f"Неожиданный код ответа: {result.code}"
 
         except Exception as e:
             logger.error("Ошибка отправки CoA-Request: %s", e)
-            return False
+            return False, f"Исключение при отправке CoA-Request: {str(e)}"
 
-    def send_disconnect_request(self, attributes: Dict[str, str]) -> bool:
-        """Отправка Disconnect-Request пакета"""
+    def send_disconnect_request(self, attributes: Dict[str, str]) -> tuple[bool, str]:
+        """Отправка Disconnect-Request пакета
+
+        Returns:
+            tuple[bool, str]: (success, reason) - успех операции и причина (при неуспехе)
+        """
         try:
             # Преобразуем атрибуты в формат pyrad
             pyrad_attributes = {k.replace("-", "_"): v for k, v in attributes.items()}
@@ -89,11 +104,21 @@ class RADIUSClient:
             result = self.client.SendPacket(request)
 
             logger.info("Disconnect-Request отправлен, результат: %s", result.code)
-            return True
+
+            # Проверяем код ответа
+            if result.code == packet.DisconnectACK:
+                return True, "Disconnect-Request успешно выполнен"
+            elif result.code == packet.DisconnectNAK:
+                return (
+                    False,
+                    f"Disconnect-Request отклонен (Disconnect-NAK), код: {result.code}",
+                )
+            else:
+                return False, f"Неожиданный код ответа: {result.code}"
 
         except Exception as e:
             logger.error("Ошибка отправки Disconnect-Request: %s", e)
-            return False
+            return False, f"Исключение при отправке Disconnect-Request: {str(e)}"
 
 
 class COAConsumer:
@@ -249,9 +274,9 @@ class COAConsumer:
                     return
 
                 if request_type == "kill":
-                    await self.handle_kill_request(session_data)
+                    await self.handle_kill_request(session_data, data)
                 elif request_type == "update":
-                    await self.handle_update_request(session_data, attributes)
+                    await self.handle_update_request(session_data, attributes, data)
                 else:
                     error_reason = f"Неизвестный тип COA запроса: {request_type}"
                     logger.warning(error_reason)
@@ -288,13 +313,17 @@ class COAConsumer:
                         dlq_error,
                     )
 
-    async def handle_kill_request(self, session_data: Dict[str, Any]):
+    async def handle_kill_request(
+        self, session_data: Dict[str, Any], original_message: Dict[str, Any]
+    ):
         """Обработка запроса на завершение сессии"""
         session_id = session_data.get("Acct-Session-Id", "unknown")
         nas_ip = session_data.get("NAS-IP-Address")
 
         if not nas_ip:
-            logger.error("NAS-IP-Address не найден в данных сессии %s", session_id)
+            error_reason = f"NAS-IP-Address не найден в данных сессии {session_id}"
+            logger.error(error_reason)
+            await self.send_to_dlq(original_message, error_reason)
             return
 
         logger.info(
@@ -309,21 +338,21 @@ class COAConsumer:
         try:
             # Создаем RADIUS клиент для конкретного NAS
             radius_client = self.get_radius_client(nas_ip)
-            success = radius_client.send_disconnect_request(attributes)
+            success, reason = radius_client.send_disconnect_request(attributes)
             if success:
                 logger.info(
                     "Disconnect-Request успешно отправлен для сессии %s", session_id
                 )
             else:
-                logger.error(
-                    "Ошибка отправки Disconnect-Request для сессии %s", session_id
+                error_reason = (
+                    f"Disconnect-Request неуспешен для сессии {session_id}: {reason}"
                 )
+                logger.error(error_reason)
+                await self.send_to_dlq(original_message, error_reason)
         except Exception as e:
-            logger.error(
-                "Ошибка при отправке Disconnect-Request для сессии %s: %s",
-                session_id,
-                e,
-            )
+            error_reason = f"Ошибка при отправке Disconnect-Request для сессии {session_id}: {str(e)}"
+            logger.error(error_reason)
+            await self.send_to_dlq(original_message, error_reason)
 
     def _build_kill_attributes(self, session_data: Dict[str, Any]) -> Dict[str, str]:
         """Формирование атрибутов для завершения сессии"""
@@ -337,14 +366,19 @@ class COAConsumer:
         return attributes
 
     async def handle_update_request(
-        self, session_data: Dict[str, Any], attributes: Dict[str, Any]
+        self,
+        session_data: Dict[str, Any],
+        attributes: Dict[str, Any],
+        original_message: Dict[str, Any],
     ):
         """Обработка запроса на обновление атрибутов сессии"""
         session_id = session_data.get("Acct-Session-Id", "unknown")
         nas_ip = session_data.get("NAS-IP-Address")
 
         if not nas_ip:
-            logger.error("NAS-IP-Address не найден в данных сессии %s", session_id)
+            error_reason = f"NAS-IP-Address не найден в данных сессии {session_id}"
+            logger.error(error_reason)
+            await self.send_to_dlq(original_message, error_reason)
             return
 
         logger.info("Отправка CoA-Request для сессии %s на NAS %s", session_id, nas_ip)
@@ -361,15 +395,21 @@ class COAConsumer:
         try:
             # Создаем RADIUS клиент для конкретного NAS
             radius_client = self.get_radius_client(nas_ip)
-            success = radius_client.send_coa_request(coa_attributes)
+            success, reason = radius_client.send_coa_request(coa_attributes)
             if success:
                 logger.info("CoA-Request успешно отправлен для сессии %s", session_id)
             else:
-                logger.error("Ошибка отправки CoA-Request для сессии %s", session_id)
+                error_reason = (
+                    f"CoA-Request неуспешен для сессии {session_id}: {reason}"
+                )
+                logger.error(error_reason)
+                await self.send_to_dlq(original_message, error_reason)
         except Exception as e:
-            logger.error(
-                "Ошибка при отправке CoA-Request для сессии %s: %s", session_id, e
+            error_reason = (
+                f"Ошибка при отправке CoA-Request для сессии {session_id}: {str(e)}"
             )
+            logger.error(error_reason)
+            await self.send_to_dlq(original_message, error_reason)
 
     async def start_consuming(self):
         """Начало потребления сообщений"""
