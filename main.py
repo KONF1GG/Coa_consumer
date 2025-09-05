@@ -143,13 +143,13 @@ class COAConsumer:
         self.dlq_exchange = None
         self.queue = None
         self.dlq_queue = None
-        # Разрешенные логины для обработки
-        self.allowed_logins = {"test8", "police", "test-ag"}
+        # Разрешенные NAS IP адреса для обработки
+        self.allowed_nas_ips = {"10.10.1.12"}
 
-    def is_login_allowed(self, session_data: Dict[str, Any]) -> bool:
-        """Проверяет, разрешен ли логин для обработки"""
-        username = session_data.get("login", "")
-        return username in self.allowed_logins
+    def is_nas_allowed(self, session_data: Dict[str, Any]) -> bool:
+        """Проверяет, разрешен ли NAS IP для обработки"""
+        nas_ip = session_data.get("NAS-IP-Address", "")
+        return nas_ip in self.allowed_nas_ips
 
     async def send_to_dlq(self, original_message: Dict[str, Any], error_reason: str):
         """Отправляет сообщение в мертвую очередь с описанием ошибки"""
@@ -263,12 +263,12 @@ class COAConsumer:
                 session_data = data.get("session_data", {})
                 attributes = data.get("attributes", {})
 
-                # Проверяем, разрешен ли логин для обработки
-                if not self.is_login_allowed(session_data):
-                    username = session_data.get("login", "unknown")
-                    error_reason = f"Логин '{username}' не разрешен для обработки"
+                # Проверяем, разрешен ли NAS IP для обработки
+                if not self.is_nas_allowed(session_data):
+                    nas_ip = session_data.get("NAS-IP-Address", "unknown")
+                    error_reason = f"NAS IP '{nas_ip}' не разрешен для обработки"
                     logger.info(
-                        "Сообщение для логина %s отправлено в мертвую очередь", username
+                        "Сообщение для NAS %s отправлено в мертвую очередь", nas_ip
                     )
                     await self.send_to_dlq(data, error_reason)
                     return
