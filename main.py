@@ -69,13 +69,11 @@ class RADIUSClient:
 
             logger.info("CoA-Request отправлен, результат: %s", result.code)
 
-            # Проверяем код ответа
-            if result.code == packet.CoAACK:
+            # Проверяем код ответа (44 = успех)
+            if result.code == 44:
                 return True, "CoA-Request успешно выполнен"
-            elif result.code == packet.CoANAK:
-                return False, f"CoA-Request отклонен (CoA-NAK), код: {result.code}"
             else:
-                return False, f"Неожиданный код ответа: {result.code}"
+                return False, f"CoA-Request неуспешен, код ответа: {result.code}"
 
         except Exception as e:
             logger.error("Ошибка отправки CoA-Request: %s", e)
@@ -105,16 +103,11 @@ class RADIUSClient:
 
             logger.info("Disconnect-Request отправлен, результат: %s", result.code)
 
-            # Проверяем код ответа
-            if result.code == packet.DisconnectACK:
+            # Проверяем код ответа (44 = успех)
+            if result.code == 44:
                 return True, "Disconnect-Request успешно выполнен"
-            elif result.code == packet.DisconnectNAK:
-                return (
-                    False,
-                    f"Disconnect-Request отклонен (Disconnect-NAK), код: {result.code}",
-                )
             else:
-                return False, f"Неожиданный код ответа: {result.code}"
+                return False, f"Disconnect-Request неуспешен, код ответа: {result.code}"
 
         except Exception as e:
             logger.error("Ошибка отправки Disconnect-Request: %s", e)
