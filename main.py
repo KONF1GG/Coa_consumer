@@ -337,6 +337,7 @@ class COAConsumer:
                     "Disconnect-Request успешно отправлен для сессии %s", session_id
                 )
             else:
+                # Неуспешный kill - отправляем в мертвую очередь
                 error_reason = (
                     f"Disconnect-Request неуспешен для сессии {session_id}: {reason}"
                 )
@@ -392,6 +393,7 @@ class COAConsumer:
             if success:
                 logger.info("CoA-Request успешно отправлен для сессии %s", session_id)
             else:
+                # Неуспешный update - отправляем в мертвую очередь
                 error_reason = (
                     f"CoA-Request неуспешен для сессии {session_id}: {reason}"
                 )
