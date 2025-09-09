@@ -136,7 +136,7 @@ class COAConsumer:
         self.queue = None
         self.dlq_queue = None
         # Разрешенные NAS IP адреса для обработки
-        self.allowed_nas_ips = {"10.10.1.12"}
+        self.allowed_nas_ips = {"10.10.1.12", "10.10.15.212"}
 
     def is_nas_allowed(self, session_data: Dict[str, Any]) -> bool:
         """Проверяет, разрешен ли NAS IP для обработки"""
