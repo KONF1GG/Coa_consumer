@@ -70,7 +70,7 @@ class RADIUSClient:
             logger.info("CoA-Request отправлен, результат: %s", result.code)
 
             # Проверяем код ответа (44 = успех)
-            if result.code == 44:
+            if result.code == 44 or result.code == 41:
                 return True, "CoA-Request успешно выполнен"
             else:
                 return False, f"CoA-Request неуспешен, код ответа: {result.code}"
@@ -103,8 +103,7 @@ class RADIUSClient:
 
             logger.info("Disconnect-Request отправлен, результат: %s", result.code)
 
-            # Проверяем код ответа (44 = успех)
-            if result.code == 44:
+            if result.code == 44 or result.code == 41:
                 return True, "Disconnect-Request успешно выполнен"
             else:
                 return False, f"Disconnect-Request неуспешен, код ответа: {result.code}"
